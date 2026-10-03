@@ -694,6 +694,14 @@ html.no-webgl .nofield{display:grid}
 /* anchor offset for the sticky nav when native smooth scrolling is in use */
 section[id],footer[id]{scroll-margin-top:clamp(84px,11vh,124px)}
 
+/* Lenis requires this stylesheet; it sets the classes, we supply the rules.
+   Without it nested scroll areas fight the smooth scroller and stop() does nothing. */
+html.lenis,html.lenis body{height:auto}
+.lenis.lenis-smooth{scroll-behavior:auto!important}
+.lenis.lenis-smooth [data-lenis-prevent]{overscroll-behavior:contain}
+.lenis.lenis-stopped{overflow:hidden}
+.lenis.lenis-smooth iframe{pointer-events:none}
+
 @media print{
   .gl,.nav,.menu,.cursor,.cursor-dot,.grain,.totop,.pre,.plumb{display:none!important}
   body{background:#fff; color:#000}
@@ -927,7 +935,7 @@ section[id],footer[id]{scroll-margin-top:clamp(84px,11vh,124px)}
             <span class="parityflag">Parity &mdash; 100%</span>
           </div>
         </div>
-        <div class="tblwrap" id="tblPanel" hidden>
+        <div class="tblwrap" id="tblPanel" data-lenis-prevent hidden>
           <table class="tbl" id="tbl"></table>
         </div>
         <div class="tip" id="tip" role="presentation"></div>
@@ -1115,7 +1123,7 @@ section[id],footer[id]{scroll-margin-top:clamp(84px,11vh,124px)}
   </div>
 
   <div class="rail rv rv-d1" role="group" aria-roledescription="carousel" aria-label="Illustrative stories">
-    <div class="rail__scroller" id="rail" tabindex="0" aria-label="Stories, scrollable. Use arrow keys to move between stories.">
+    <div class="rail__scroller" id="rail" data-lenis-prevent tabindex="0" aria-label="Stories, scrollable. Use arrow keys to move between stories.">
 
       <article class="story shell">
         <div class="core story__inner">
@@ -1428,6 +1436,8 @@ var CONFIG = {
     light: { gap: "#B8431A", parity: "#0C8A66" }
   },
   preloader: { min: 750, max: 1700 },
+  /* smooth scroll: lower duration = snappier. Set enabled:false for native scrolling. */
+  scroll: { enabled: true, duration: 0.9, wheelMultiplier: 1, touchMultiplier: 1.6, anchorOffset: -90 },
   storage: { theme: "plumbline.theme", tally: "plumbline.tally", region: "plumbline.region" },
   counterDuration: 1.9
 };
@@ -1575,7 +1585,10 @@ function initNav() {
 
   function onScroll() {
     var y = window.scrollY;
-    if (y > 120 && y > lastY + 4) nav.classList.add("is-hidden");
+    if (Scroll.moving()) {
+      /* an anchor jump is in flight: keep the bar as it is */
+      nav.classList.remove("is-hidden");
+    } else if (y > 120 && y > lastY + 4) nav.classList.add("is-hidden");
     else if (y < lastY - 4 || y < 120) nav.classList.remove("is-hidden");
     var top = $("#totop");
     if (top) {
@@ -1610,6 +1623,7 @@ function initNav() {
     burger.setAttribute("aria-expanded", String(open));
     burger.setAttribute("aria-label", open ? "Close menu" : "Open menu");
     document.body.classList.toggle("menu-open", open);
+    Scroll.lock(open);
     if (open) {
       menu.hidden = false;
       window.requestAnimationFrame(function () { menu.classList.add("is-open"); });
@@ -1641,17 +1655,30 @@ function initNav() {
 
 /* ---------- 8. SCROLL (Lenis, with native fallback) --------------------- */
 var Scroll = (function () {
-  var lenis = null;
+  var lenis = null, until = 0;
   function to(target) {
     var el = typeof target === "string" ? $(target) : target;
     if (!el) return;
-    if (lenis) lenis.scrollTo(el, { offset: -90, duration: REDUCE ? 0 : 1.15 });
+    /* mark the jump so the navbar does not hide itself mid-flight */
+    until = Date.now() + (REDUCE ? 120 : 1400);
+    if (lenis) lenis.scrollTo(el, { offset: CONFIG.scroll.anchorOffset, duration: REDUCE ? 0 : 1.15 });
     else el.scrollIntoView({ behavior: REDUCE ? "auto" : "smooth", block: "start" });
   }
+  function moving() { return Date.now() < until; }
+  /* overflow:hidden cannot stop Lenis — it drives window.scrollTo itself */
+  function lock(on) {
+    if (!lenis) return;
+    if (on) lenis.stop(); else lenis.start();
+  }
   function init() {
-    if (window.Lenis && !REDUCE) {
+    if (window.Lenis && !REDUCE && CONFIG.scroll.enabled) {
       try {
-        lenis = new window.Lenis({ duration: 1.1, smoothWheel: true, touchMultiplier: 1.6 });
+        lenis = new window.Lenis({
+          duration: CONFIG.scroll.duration,
+          smoothWheel: true,
+          wheelMultiplier: CONFIG.scroll.wheelMultiplier,
+          touchMultiplier: CONFIG.scroll.touchMultiplier
+        });
         root.classList.add("has-lenis");
         (function tick(t) { if (!lenis) return; lenis.raf(t); window.requestAnimationFrame(tick); })(0);
       } catch (e) { lenis = null; }
@@ -1668,7 +1695,8 @@ var Scroll = (function () {
       if (history.replaceState) history.replaceState(null, "", href);
     });
   }
-  return { init: init, to: to, raf: function (t) { if (lenis) lenis.raf(t); } };
+  return { init: init, to: to, lock: lock, moving: moving,
+    raf: function (t) { if (lenis) lenis.raf(t); } };
 })();
 
 /* ---------- 9. REVEAL --------------------------------------------------- */
@@ -2257,6 +2285,8 @@ function initRail() {
   function update() {
     var max = sc.scrollWidth - sc.clientWidth;
     var p = max > 2 ? sc.scrollLeft / max : 0;
+    /* index by card, the carousel convention: it always names the card you are
+       parked on. The bar beside it carries continuous progress. */
     var i = clamp(Math.round(sc.scrollLeft / Math.max(step(), 1)), 0, cards.length - 1);
     prog.style.width = (100 / cards.length) + "%";
     prog.style.transform = "translateX(" + (p * (cards.length - 1) * 100) + "%)";
