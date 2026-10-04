@@ -396,6 +396,16 @@ p { margin: 0; }
     var(--plate);
   touch-action: pan-y;
 }
+.stage.is-3d, .hero__plate.is-3d { background: radial-gradient(120% 90% at 50% 42%, var(--surface-2), var(--plate) 70%); }
+.stage.is-3d { cursor: grab; }
+.stage.is-dragging { cursor: grabbing; }
+.stage__orbit { display: none; }
+.stage.is-3d .stage__orbit { display: inline; }
+.hero__labels { position: absolute; inset: 0; pointer-events: none; }
+.hero__labels span { position: absolute; left: 0; top: 0; font-family: var(--font-mono); font-size: .66rem; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+.hero__labels .ha, .hero__labels .hb { font-family: var(--font-display); font-size: 1rem; letter-spacing: 0; }
+.hero__labels .ha { color: var(--pathA); }
+.hero__labels .hb { color: var(--pathB); }
 .stage canvas, .stage > svg.fallback { position: absolute; inset: 0; width: 100%; height: 100%; }
 .stage__labels { position: absolute; inset: 0; pointer-events: none; }
 .slabel { position: absolute; left: 0; top: 0; will-change: transform; }
@@ -664,7 +674,7 @@ p { margin: 0; }
   .seg span { padding: 6px 10px; font-size: .8rem; }
   .theme-toggle span { display: none; }
 }
-@media (pointer: coarse) { .stage__keys { display: none; } }
+@media (pointer: coarse) { .stage__keys, .stage.is-3d .stage__orbit { display: none; } }
 @media (max-width: 400px) {
   .controls .btn { padding-inline: 10px; }
   .scenarios { grid-template-columns: minmax(0, 1fr); }
@@ -813,7 +823,7 @@ p { margin: 0; }
         <div class="stage" id="stage">
           <div class="stage__labels" id="stage-labels" aria-hidden="true"></div>
           <p class="status-pill stage__status" id="status-pill" data-running="false"><i aria-hidden="true"></i><span class="visually-hidden">Simulation status: </span><span>Step <b id="status-step">0</b></span><span id="status-phase">Ready</span></p>
-          <div class="stage__meta" aria-hidden="true"><span>Renderer <b id="renderer-name">—</b></span><span>Agents in transit <b id="agents-transit">0</b> / <b id="agents-total">40</b></span><span class="stage__keys"><kbd>Space</kbd> start/pause · <kbd>→</kbd> step</span></div>
+          <div class="stage__meta" aria-hidden="true"><span>Renderer <b id="renderer-name">—</b></span><span>Agents in transit <b id="agents-transit">0</b> / <b id="agents-total">40</b></span><span class="stage__keys"><kbd>Space</kbd> start/pause · <kbd>→</kbd> step</span><span class="stage__orbit">Drag to orbit · double-click to reset</span></div>
           <div class="stage__legend" aria-hidden="true">
             <span><i class="lg-dot" style="background:var(--pathA)"></i>Path A agent</span>
             <span><i class="lg-dot" style="background:var(--pathB)"></i>Path B agent</span>
@@ -1758,14 +1768,17 @@ p { margin: 0; }
     '}'
   ].join('\n');
 
-  const Renderer3D = (() => {
+  // Factory: the simulator stage and the hero each get their own instance.
+  function createRenderer3D() {
     const SEG = 220;
     let T = null, gl = null, scene = null, camera = null, stage = null, canvas = null;
     let width = 1, height = 1, themeName = 'dark', palette = null, reduced = false, lowPower = false;
     let lut = {}, trails = {}, tracks = {}, gates = { A: [], B: [] };
     let antMesh = null, halo = null, haloPos = null, haloCol = null, haloTex = null;
     let originRing = null, originDisc = null, destDisc = null, destRing = null, destPulse = null;
-    let onLost = null;
+    let onLost = null, orbitMode = 'pointer', population = 0;
+    let shadows = {}, structMats = [], beam = null, beamRing = null, gridLines = null, pedestals = [];
+    const orbit = { yaw: 0, pitch: 0, dragging: false, lx: 0, ly: 0 };
     const disposables = [];
     const disp = { A: { w: 0.07, s: 70, p: 0.5 }, B: { w: 0.07, s: 70, p: 0.5 } };
     const pulse = { A: { v: 0, t: 0.5 }, B: { v: 0, t: 0.5 } };
@@ -1778,8 +1791,8 @@ p { margin: 0; }
     function track(o) { disposables.push(o); return o; }
 
     function buildLut(sign) {
-      const c = new T.CubicBezierCurve3(new T.Vector3(0, -2.9, 0), new T.Vector3(3.0 * sign, -1.5, 0.5),
-        new T.Vector3(3.0 * sign, 1.5, 0.5), new T.Vector3(0, 2.9, 0));
+      const c = new T.CubicBezierCurve3(new T.Vector3(0, -2.9, 0), new T.Vector3(3.0 * sign, -1.5, 1.2),
+        new T.Vector3(3.0 * sign, 1.5, 1.2), new T.Vector3(0, 2.9, 0));
       c.arcLengthDivisions = 400;
       const n = SEG + 1, pos = new Float32Array(n * 3), tan = new Float32Array(n * 3), side = new Float32Array(n * 3);
       const p = new T.Vector3(), t = new T.Vector3(), s = new T.Vector3();
@@ -1898,14 +1911,88 @@ p { margin: 0; }
         const gpos = pos.clone().add(out.clone().multiplyScalar(0.36));
         gpos.z += 0.14;
         glyph.position.copy(gpos);
-        scene.add(ring, glyph);
+        // 3D checkpoint frame: two posts and a lintel standing over the trail.
+        const frameMat = structMat(0.85);
+        const frame = new T.Group();
+        frame.position.copy(pos);
+        frame.rotation.z = Math.atan2(side.y, side.x);
+        const postL = new T.Mesh(unitBoxZ, frameMat), postR = new T.Mesh(unitBoxZ, frameMat), lintel = new T.Mesh(unitBoxX, frameMat);
+        frame.add(postL, postR, lintel);
+        scene.add(ring, glyph, frame);
         const labelAnchor = pos.clone().add(out.clone().multiplyScalar(0.98));
-        labelAnchor.z += 0.14;
-        gates[p].push({ key, ring, glyph, ringMat, glyphMat, breaker, value: -1, anim: 0, pulse: 0, anchor: labelAnchor, s: 0.6 });
+        labelAnchor.z += 0.3;
+        gates[p].push({ key, ring, glyph, ringMat, glyphMat, frameMat, postL, postR, lintel, base: pos.clone(), out: out.clone(),
+          breaker, value: -1, anim: 0, pulse: 0, anchor: labelAnchor, s: 0.6, h: 0.12, hw: 0.22 });
       });
     }
 
-    let gateRingGeo = null;
+    let gateRingGeo = null, unitBoxZ = null, unitBoxX = null;
+
+    // Lit, depth-tested material for solid structures (piers, pedestals, gate frames).
+    function structMat(opacity) {
+      const m = track(new T.MeshLambertMaterial({ transparent: opacity < 1, opacity }));
+      structMats.push(m);
+      return m;
+    }
+
+    function buildStructures() {
+      // Ground grid gives the scene real perspective depth.
+      const pts = [];
+      for (let x = -5; x <= 5.001; x += 0.5) pts.push(x, -4.2, -0.02, x, 4.2, -0.02);
+      for (let y = -4.2; y <= 4.201; y += 0.5) pts.push(-5, y, -0.02, 5, y, -0.02);
+      const gg = track(new T.BufferGeometry());
+      gg.setAttribute('position', new T.Float32BufferAttribute(pts, 3));
+      gridLines = new T.LineSegments(gg, track(new T.LineBasicMaterial({ transparent: true, opacity: 0.5, depthWrite: false })));
+      gridLines.renderOrder = -2;
+      scene.add(gridLines);
+      // Ground shadow (footprint) of each arch, and piers holding the arch up.
+      const pierGeo = track(new T.CylinderGeometry(0.014, 0.02, 1, 8));
+      pierGeo.rotateX(Math.PI / 2);
+      pierGeo.translate(0, 0, 0.5);
+      const pierMat = structMat(0.75);
+      const q = new T.Vector3();
+      for (const p of PATHS) {
+        const L = lut[p];
+        const flat = { pos: L.pos.slice(), tan: L.tan, side: L.side, outward: L.outward };
+        for (let i = 2; i < flat.pos.length; i += 3) flat.pos[i] = -0.01;
+        shadows[p] = ribbon(flat, { uWidth: { value: 0.05 }, uFlowAmp: { value: 0 }, uOpacity: { value: 0.5 }, uHalo: { value: 0 } });
+        shadows[p].renderOrder = -1;
+        scene.add(shadows[p]);
+        for (let t = 0.13; t < 0.9; t += 0.0925) {
+          sample(L, t, q);
+          const pier = new T.Mesh(pierGeo, pierMat);
+          pier.position.set(q.x, q.y, 0);
+          pier.scale.set(1, 1, Math.max(0.01, q.z - 0.02));
+          scene.add(pier);
+        }
+      }
+      // Pedestals for the start and the opportunity.
+      const pedGeo = track(new T.CylinderGeometry(1, 1.12, 1, 48));
+      pedGeo.rotateX(Math.PI / 2);
+      for (const [y, r] of [[-2.9, 0.34], [2.9, 0.4]]) {
+        const ped = new T.Mesh(pedGeo, structMat(1));
+        ped.scale.set(r, r, 0.16);
+        ped.position.set(0, y, -0.085);
+        pedestals.push(ped);
+        scene.add(ped);
+      }
+      // Opportunity beacon: brightness follows the recommended path's inclusion, pulses on arrivals.
+      const beamGeo = track(new T.CylinderGeometry(0.07, 0.2, 2.6, 32, 1, true));
+      beamGeo.rotateX(Math.PI / 2);
+      beamGeo.translate(0, 0, 1.3);
+      beam = new T.Mesh(beamGeo, track(new T.MeshBasicMaterial({ transparent: true, depthWrite: false, side: T.DoubleSide })));
+      beam.position.set(0, 2.9, 0);
+      beam.renderOrder = 3;
+      beamRing = new T.Mesh(track(new T.TorusGeometry(0.44, 0.012, 8, 72)), track(new T.MeshBasicMaterial({ transparent: true, depthWrite: false })));
+      beamRing.position.set(0, 2.9, 0.4);
+      beamRing.renderOrder = 3;
+      scene.add(beam, beamRing);
+      const hemi = new T.HemisphereLight(0xffffff, 0x404040, 0.85);
+      hemi.position.set(0, 0, 1);
+      const sun = new T.DirectionalLight(0xffffff, 0.75);
+      sun.position.set(-3, -4, 6);
+      scene.add(hemi, sun);
+    }
 
     function antGeometry() {
       const parts = [];
@@ -1970,6 +2057,15 @@ p { margin: 0; }
       destRing.material.color.set(palette.inclusive);
       destPulse.material.color.set(palette.inclusive);
       if (halo) halo.visible = dark && !lowPower;
+      for (const p of PATHS) { shadows[p].material.uniforms.uColor.value.set(palette.track); shadows[p].material.uniforms.uOpacity.value = dark ? 0.55 : 0.7; }
+      for (const m of structMats) m.color.set(palette.track);
+      for (const ped of pedestals) ped.material.color.set(dark ? '#16261F' : '#DAD5C4');
+      gridLines.material.color.set(palette.track);
+      gridLines.material.opacity = dark ? 0.55 : 0.6;
+      beam.material.color.set(palette.inclusive);
+      beam.material.blending = dark ? T.AdditiveBlending : T.NormalBlending;
+      beam.material.needsUpdate = true;
+      beamRing.material.color.set(palette.inclusive);
       for (const p of PATHS) for (const g of gates[p]) g.value = -1; // force recolour
     }
 
@@ -1986,16 +2082,19 @@ p { margin: 0; }
 
     function placeCamera(dt) {
       const k = 1 - Math.exp(-dt * 3);
-      const tyaw = reduced ? 0 : pointerState.x * 0.45 * CONFIG.animation.parallax;
-      const tpitch = reduced ? 0 : pointerState.y * 0.08;
+      let tyaw = orbit.yaw, tpitch = orbit.pitch;
+      if (!reduced) {
+        if (orbitMode === 'auto') tyaw += Math.sin(performance.now() / 1000 * 0.22) * 0.6;
+        else if (!orbit.dragging) { tyaw += pointerState.x * 0.45 * CONFIG.animation.parallax; tpitch += pointerState.y * 0.08; }
+      }
       camState.yaw += (tyaw - camState.yaw) * k;
       camState.pitch += (tpitch - camState.pitch) * k;
       V.copy(camDir);
-      V.applyAxisAngle(Y_AXIS, camState.yaw);
-      V.y -= camState.pitch;
+      V.applyAxisAngle(X_AXIS, -camState.pitch);
+      V.applyAxisAngle(UP, camState.yaw);
       V.normalize().multiplyScalar(camState.dist);
       camera.position.copy(camTarget).add(V);
-      camera.up.set(0, 1, 0);
+      camera.up.copy(UP);
       camera.lookAt(camTarget);
     }
 
@@ -2007,6 +2106,20 @@ p { margin: 0; }
       pointerState.y = clamp(((e.clientY - r.top) / r.height) * 2 - 1, -1, 1);
     }
     function onLeave() { pointerState.x = 0; pointerState.y = 0; }
+    function onDown(e) {
+      if (e.pointerType !== 'mouse' || e.button !== 0 || orbitMode !== 'pointer') return;
+      orbit.dragging = true; orbit.lx = e.clientX; orbit.ly = e.clientY;
+      stage.classList.add('is-dragging');
+      if (stage.setPointerCapture) { try { stage.setPointerCapture(e.pointerId); } catch (err) { /* not capturable */ } }
+    }
+    function onDrag(e) {
+      if (!orbit.dragging) return;
+      orbit.yaw = clamp(orbit.yaw - (e.clientX - orbit.lx) * 0.006, -0.9, 0.9);
+      orbit.pitch = clamp(orbit.pitch + (e.clientY - orbit.ly) * 0.004, -0.45, 0.5);
+      orbit.lx = e.clientX; orbit.ly = e.clientY;
+    }
+    function onUp() { orbit.dragging = false; stage.classList.remove('is-dragging'); }
+    function onDbl() { orbit.yaw = 0; orbit.pitch = 0; }
     function onContextLost(e) { e.preventDefault(); if (onLost) onLost(); }
 
     function project(vec, key) {
@@ -2030,6 +2143,8 @@ p { margin: 0; }
         lowPower = !!opts.lowPower;
         themeName = opts.theme;
         onLost = opts.onLost;
+        orbitMode = opts.orbit || 'pointer';
+        population = opts.population || CONFIG.simulation.population;
         try {
           gl = new T.WebGLRenderer({ antialias: !lowPower, alpha: true, powerPreference: 'high-performance' });
         } catch (e) { gl = null; return false; }
@@ -2037,8 +2152,8 @@ p { margin: 0; }
         tq = new T.Quaternion(); tm = new T.Matrix4(); tsc = new T.Vector3(); tc = new T.Color(); tc2 = new T.Color();
         X_AXIS = new T.Vector3(1, 0, 0); Y_AXIS = new T.Vector3(0, 1, 0); UP = new T.Vector3(0, 0, 1);
         for (const k of ['A', 'B', 'ink', 'muted', 'ground']) pc[k] = new T.Color();
-        camDir = new T.Vector3(0, -0.6, 1).normalize();
-        camTarget = new T.Vector3(0, 0.12, 0.1);
+        camDir = new T.Vector3(0, -1.05, 1).normalize();
+        camTarget = new T.Vector3(0, 0.1, 0.35);
         gl.setPixelRatio(Math.min(window.devicePixelRatio || 1, lowPower ? 1.5 : 2));
         gl.setClearColor(0x000000, 0);
         canvas = gl.domElement;
@@ -2056,6 +2171,9 @@ p { margin: 0; }
           scene.add(tracks[p], trails[p]);
         }
         gateRingGeo = track(new T.PlaneGeometry(0.46, 0.034));
+        unitBoxZ = track(new T.BoxGeometry(0.034, 0.034, 1));
+        unitBoxX = track(new T.BoxGeometry(1, 0.034, 0.034));
+        buildStructures();
         buildGates('A'); buildGates('B');
 
         const basic = () => track(new T.MeshBasicMaterial({ transparent: true, depthWrite: false, depthTest: false, side: T.DoubleSide }));
@@ -2070,7 +2188,7 @@ p { margin: 0; }
         for (const m of [originDisc, originRing, destDisc, destRing, destPulse]) m.renderOrder = 2;
         scene.add(originDisc, originRing, destDisc, destRing, destPulse);
 
-        const n = CONFIG.simulation.population;
+        const n = population;
         antMesh = new T.InstancedMesh(antGeometry(), track(new T.MeshBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true })), n);
         antMesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
         for (let i = 0; i < n; i++) antMesh.setColorAt(i, tc.set(0xffffff));
@@ -2092,7 +2210,7 @@ p { margin: 0; }
         scene.add(halo);
 
         anchors.origin = new T.Vector3(0, -3.42, 0);
-        anchors.dest = new T.Vector3(0, 3.62, 0);
+        anchors.dest = new T.Vector3(1.05, 3.05, 0.15);
         const la = new T.Vector3(), lb = new T.Vector3();
         sample(lut.A, 0.1, la); sample(lut.B, 0.1, lb);
         anchors.pathA = la.add(new T.Vector3(-0.62, 0, 0.05));
@@ -2100,6 +2218,11 @@ p { margin: 0; }
 
         stage.addEventListener('pointermove', onPointer);
         stage.addEventListener('pointerleave', onLeave);
+        stage.addEventListener('pointerdown', onDown);
+        stage.addEventListener('pointermove', onDrag);
+        stage.addEventListener('pointerup', onUp);
+        stage.addEventListener('pointercancel', onUp);
+        stage.addEventListener('dblclick', onDbl);
         applyTheme();
         this.resize();
         return true;
@@ -2157,9 +2280,9 @@ p { margin: 0; }
             if (v !== g.value) {
               g.value = v;
               const warnCol = g.key === 'gender' ? palette.sdg5 : palette.warn;
-              if (band === 'severe') { g.ringMat.color.set(warnCol); g.glyphMat.color.set(warnCol); }
-              else if (band === 'moderate') { g.ringMat.color.set(palette.muted); g.glyphMat.color.set(palette.ink); }
-              else { g.ringMat.color.set(palette.track); g.glyphMat.color.set(palette.muted); }
+              if (band === 'severe') { g.ringMat.color.set(warnCol); g.glyphMat.color.set(warnCol); g.frameMat.color.set(warnCol); }
+              else if (band === 'moderate') { g.ringMat.color.set(palette.muted); g.glyphMat.color.set(palette.ink); g.frameMat.color.set(palette.muted); }
+              else { g.ringMat.color.set(palette.track); g.glyphMat.color.set(palette.muted); g.frameMat.color.set(palette.track); }
               g.band = band;
             }
             const sev = 1 - v / 100;
@@ -2175,6 +2298,17 @@ p { margin: 0; }
             const bt = band === 'severe' ? 1.6 + sev * 1.6 : band === 'moderate' ? 1 : 0.7;
             g.ring.scale.set(bw * (1 + g.pulse * 0.4), bt * (1 + g.pulse * 0.8), 1);
             g.ringMat.opacity = band === 'severe' ? 0.95 : band === 'moderate' ? 0.6 : 0.35;
+            // Checkpoint frame: taller and narrower (more obstructive) as severity rises.
+            const th = band === 'severe' ? 0.3 + sev * 0.4 : band === 'moderate' ? 0.2 : 0.12;
+            const thw = band === 'severe' ? 0.21 - sev * 0.08 : 0.22;
+            g.h += (th - g.h) * k; g.hw += (thw - g.hw) * k;
+            const ph = g.h * (1 + g.pulse * 0.5);
+            g.postL.position.set(-g.hw, 0, ph / 2); g.postL.scale.z = ph;
+            g.postR.position.set(g.hw, 0, ph / 2); g.postR.scale.z = ph;
+            g.lintel.position.set(0, 0, ph); g.lintel.scale.x = g.hw * 2 + 0.034;
+            g.frameMat.opacity = band === 'inclusive' ? 0.35 : 0.95;
+            g.glyph.position.copy(g.base).addScaledVector(g.out, 0.08);
+            g.glyph.position.z += ph + 0.17;
             if (g.breaker) {
               const br = clamp((60 - v) / 50, 0, 1);
               g.breaker.rotation.z = -0.55 * br;
@@ -2233,6 +2367,13 @@ p { margin: 0; }
         destPulse.scale.setScalar(destFlash > 0 ? pr : 1);
         destPulse.material.opacity = destFlash * 0.8;
         destRing.material.opacity = 0.55;
+        const recP = view.state.analysis.recommended;
+        const glow = recP ? view.state.paths[recP].score / 100 : 0.25;
+        beam.material.opacity = (darkBg ? 0.08 : 0.06) + glow * (darkBg ? 0.16 : 0.12) + destFlash * 0.18;
+        beam.scale.set(1 + destFlash * 0.25, 1 + destFlash * 0.25, 0.55 + glow * 0.45);
+        beamRing.material.opacity = 0.25 + glow * 0.5;
+        beamRing.position.z = 0.4 + (reduced ? 0 : Math.sin(time * 1.4) * 0.08);
+        beamRing.rotation.z = reduced ? 0 : time * 0.6;
         destDisc.material.opacity = 0.95;
         originDisc.material.opacity = 1;
         originRing.material.opacity = darkBg ? 0.22 : 0.4;
@@ -2252,6 +2393,12 @@ p { margin: 0; }
         if (!gl) return;
         stage.removeEventListener('pointermove', onPointer);
         stage.removeEventListener('pointerleave', onLeave);
+        stage.removeEventListener('pointerdown', onDown);
+        stage.removeEventListener('pointermove', onDrag);
+        stage.removeEventListener('pointerup', onUp);
+        stage.removeEventListener('pointercancel', onUp);
+        stage.removeEventListener('dblclick', onDbl);
+        stage.classList.remove('is-dragging');
         canvas.removeEventListener('webglcontextlost', onContextLost, false);
         if (antMesh) antMesh.dispose();
         for (const o of disposables) { try { o.dispose(); } catch (e) { /* already disposed */ } }
@@ -2262,11 +2409,12 @@ p { margin: 0; }
         try { gl.forceContextLoss(); } catch (e) { /* context already lost */ }
         if (canvas.parentNode) canvas.parentNode.removeChild(canvas);
         gl = null; scene = null; camera = null; antMesh = null; halo = null;
-        lut = {}; trails = {}; tracks = {}; gates = { A: [], B: [] };
+        lut = {}; trails = {}; tracks = {}; gates = { A: [], B: [] }; shadows = {}; structMats = []; pedestals = []; beam = null; beamRing = null; gridLines = null;
         for (const k in screen) delete screen[k];
       }
     };
-  })();
+  }
+  const Renderer3D = createRenderer3D();
   /* =====================================================================
      SVG FALLBACK RENDERER
      Same interface as Renderer3D. Used when WebGL is unavailable or the
@@ -2545,20 +2693,69 @@ p { margin: 0; }
   const HeroSim = {
     canvas: null, ctx: null, w: 1, h: 1, dpr: 1, state: null, sys: null, clock: 0, acc: 0,
     interval: 1000, barrier: null, visible: true, theme: 'dark', reduced: false, caption: null,
+    r3d: null, plate: null, view: null, labels: null,
 
     init(canvas, caption, opts) {
       this.canvas = canvas; this.ctx = canvas.getContext('2d'); this.caption = caption;
       this.reduced = opts.reduced; this.theme = opts.theme;
+      this.plate = canvas.parentElement;
       this.state = Engine.createState('education', 'balanced');
       this.state.seed = 7;
       Engine.reset(this.state);
       this.sys = AgentSystem.create(32);
       this.sys.travel = 2100; this.sys.back = 1300;
+      this.view = { state: this.state, agents: this.sys.agents, arrivals: this.sys.arrivals, clock: 0 };
+      if (opts.use3d) this.mount3d();
       this.resize();
-      if (this.reduced) { for (let i = 0; i < 24; i++) Engine.simulationStep(this.state); this.draw(); this.setCaption('Static view (reduced motion)'); }
+      if (this.reduced) {
+        for (let i = 0; i < 24; i++) Engine.simulationStep(this.state);
+        this.render(2000);
+        this.setCaption('Static view (reduced motion)');
+      }
     },
 
+    // 3D hero: a second renderer instance, slowly orbiting, driven by this hero's own engine state.
+    mount3d() {
+      const r = createRenderer3D();
+      if (!r.init(this.plate, { reduced: this.reduced, lowPower: false, theme: this.theme, population: this.sys.agents.length, orbit: 'auto', onLost: () => this.unmount3d() })) return;
+      this.r3d = r;
+      this.canvas.style.display = 'none';
+      this.plate.classList.add('is-3d');
+      const box = document.createElement('div');
+      box.className = 'hero__labels';
+      box.setAttribute('aria-hidden', 'true');
+      box.innerHTML = '<span data-k="origin">Start</span><span data-k="dest">Opportunity</span><span data-k="pathA" class="ha">A</span><span data-k="pathB" class="hb">B</span>';
+      this.plate.appendChild(box);
+      this.labels = Array.from(box.children).map(el => ({ el, k: el.dataset.k }));
+    },
+    unmount3d() {
+      if (!this.r3d) return;
+      setTimeout(() => {
+        if (!this.r3d) return;
+        this.r3d.dispose(); this.r3d = null;
+        this.canvas.style.display = '';
+        this.plate.classList.remove('is-3d');
+        const box = this.plate.querySelector('.hero__labels');
+        if (box) box.remove();
+        this.labels = null;
+        this.resize();
+      }, 0);
+    },
+    setTheme(t) { this.theme = t; if (this.r3d) this.r3d.setTheme(t); if (this.reduced) this.render(2000); },
+    render(dtMs) {
+      if (this.r3d) {
+        this.view.clock = this.clock;
+        this.r3d.update(this.view, dtMs, true);
+        for (const l of this.labels) {
+          const p = this.r3d.screen[l.k];
+          if (p) l.el.style.transform = 'translate(' + p.x.toFixed(1) + 'px,' + p.y.toFixed(1) + 'px) translate(-50%,-50%)';
+        }
+      } else this.draw();
+    },
+    dispose() { if (this.r3d) { this.r3d.dispose(); this.r3d = null; } },
+
     resize() {
+      if (this.r3d) { this.r3d.resize(); if (this.reduced) this.render(2000); return; }
       if (!this.canvas) return;
       const r = this.canvas.getBoundingClientRect();
       this.dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -2591,7 +2788,7 @@ p { margin: 0; }
         else if (st.analysis.recommended && st.analysis.recommended !== this.barrier) this.setCaption('Live · adapted: Path ' + st.analysis.recommended + ' preferred');
       }
       AgentSystem.update(this.sys, this.clock, dtMs);
-      this.draw();
+      this.render(dtMs);
     },
 
     point(p, t, out) {
@@ -3138,6 +3335,7 @@ p { margin: 0; }
       const opts = { reduced: this.reduced, lowPower: this.lowPower, theme: Theme.resolved, onLost: () => this.onContextLost() };
       if (!r.init(stage, opts)) { r = RendererSVG; r.init(stage, opts); }
       this.renderer = r;
+      stage.classList.toggle('is-3d', r === Renderer3D);
       this.renderer.setTheme(Theme.resolved);
       const is2d = r === RendererSVG;
       UI.el.view.setAttribute('aria-pressed', String(is2d));
@@ -3470,10 +3668,10 @@ p { margin: 0; }
       setText($('#theme-label'), label);
       $('#theme-toggle').setAttribute('aria-label', 'Colour theme: ' + this.mode + '. Activate to change.');
       if (initial) return;
-      Chart.theme = this.resolved; HeroSim.theme = this.resolved;
+      Chart.theme = this.resolved;
+      HeroSim.setTheme(this.resolved);
       if (App.renderer) App.renderer.setTheme(this.resolved);
       Chart.draw(App.state);
-      if (HeroSim.reduced) HeroSim.draw();
     }
   };
 
@@ -3625,7 +3823,7 @@ p { margin: 0; }
   function init() {
     const mm = q => (window.matchMedia ? window.matchMedia(q).matches : false);
     App.reduced = mm('(prefers-reduced-motion: reduce)');
-    App.lowPower = (navigator.hardwareConcurrency || 8) <= 4 || mm('(pointer: coarse)');
+    App.lowPower = (navigator.hardwareConcurrency || 8) <= 2 || mm('(pointer: coarse)');
     App.webgl = Renderer3D.supported();
     App.init();
     Theme.init();
@@ -3634,7 +3832,7 @@ p { margin: 0; }
     HeroSim.theme = Theme.resolved;
     Chart.init($('#chart'));
     App.mountRenderer(App.webgl ? '3d' : '2d');
-    HeroSim.init($('#hero-canvas'), $('#hero-caption'), { reduced: App.reduced, theme: Theme.resolved });
+    HeroSim.init($('#hero-canvas'), $('#hero-caption'), { reduced: App.reduced, theme: Theme.resolved, use3d: App.webgl && !App.lowPower });
     UI.syncInputs(App.state);
     UI.setRunning(false);
     UI.refresh(App.state);
@@ -3655,9 +3853,14 @@ p { margin: 0; }
     App.stopLoop();
     Observers.disconnect();
     if (App.renderer) { App.renderer.dispose(); App.renderer = null; }
+    HeroSim.dispose();
   });
   window.addEventListener('pageshow', e => {
-    if (e.persisted && !App.renderer) { App.mountRenderer(App.webgl ? '3d' : '2d'); Observers.init(); App.startLoop(); }
+    if (e.persisted && !App.renderer) {
+      App.mountRenderer(App.webgl ? '3d' : '2d');
+      if (App.webgl && !App.lowPower && !HeroSim.r3d) { HeroSim.canvas.style.display = 'none'; const old = HeroSim.plate.querySelector('.hero__labels'); if (old) old.remove(); HeroSim.mount3d(); HeroSim.resize(); }
+      Observers.init(); App.startLoop();
+    }
   });
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
