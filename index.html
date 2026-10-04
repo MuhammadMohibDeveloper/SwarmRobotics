@@ -645,10 +645,15 @@ p { margin: 0; }
   .sim__main { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; grid-template-areas: "rec" "ctl" "stage" "chal" "pa" "pb"; }
   .stage { height: clamp(380px, 70svh, 560px); }
   .stage__keys { display: none; }
+  .stage__meta { display: none; }
+  .stage__legend span:nth-child(n+4) { display: none; }
   .sim__lower { grid-template-columns: minmax(0, 1fr); }
   .scenarios { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .scenarios .scn:last-child { grid-column: 1 / -1; }
   .controls { position: sticky; top: calc(var(--nav-h) + 4px); z-index: 20; box-shadow: 0 6px 0 -2px var(--ground); }
+  .controls__group:first-child { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); width: 100%; }
+  .controls .btn { padding: 6px 4px; font-size: .8rem; gap: 4px; }
+  .controls .speed button { min-width: 36px; }
   .rec__score { margin-left: 0; text-align: left; }
   .rec__stats { grid-template-columns: 1fr; }
   .steps { grid-template-columns: 1fr; }
@@ -2802,7 +2807,7 @@ p { margin: 0; }
       E.reset.addEventListener('click', () => App.reset());
       E.demo.addEventListener('click', () => (Demo.active ? Demo.stop('stopped') : Demo.start()));
       E.view.addEventListener('click', () => App.toggleView());
-      $('#narrator-stop').addEventListener('click', () => Demo.stop('stopped'));
+      $('#narrator-stop').addEventListener('click', () => (Demo.active ? Demo.stop('stopped') : this.hideNarrator()));
       $('#speed-group').addEventListener('click', e => {
         const b = e.target.closest('[data-speed]');
         if (b) App.setSpeed(Number(b.dataset.speed));
@@ -3065,6 +3070,7 @@ p { margin: 0; }
     narrate(n, text) {
       const E = this.el;
       E.narrator.classList.add('is-on');
+      setText($('#narrator-stop'), Demo.active ? 'Stop demo' : 'Dismiss');
       setText(E.narratorN, n);
       setText(E.narratorText, text);
     },
